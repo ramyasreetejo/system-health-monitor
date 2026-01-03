@@ -1,41 +1,45 @@
-# Health Monitor (Go)
+# System Health Monitor (Go)
 
-A simple polling-based service health monitor written in Go. This project demonstrates dynamic service registration, bounded-concurrency polling, readiness vs health evaluation, and graceful shutdown. The code is intentionally structured and commented for clarity and learning.
+A polling-based service health monitor written in Go.
+This project demonstrates **dynamic service registration**, **bounded-concurrency polling**, **per-service polling intervals**, **readiness vs health evaluation**, and **graceful shutdown** using `context`.
 
 ---
 
 ## Overview
 
-The monitor periodically polls registered services over HTTP and evaluates their state based on reachability, readiness, and error metrics. Services register themselves at runtime; there is no static configuration or heartbeat mechanism.
+The monitor periodically polls registered services over HTTP and evaluates their state based on reachability, readiness, and error metrics.
 
-Key properties:
+Services **self-register at runtime**; there is no static configuration file and no heartbeat mechanism. All health information is obtained strictly via polling.
+
+Key characteristics:
 
 * Polling-based monitoring (no push / heartbeat)
-* Self-timed polling cycles (no overlapping cycles)
+* Dynamic service registration via HTTP
+* Per-service polling intervals
+* Snapshot-based polling cycles (no overlap)
 * Bounded worker pool (maximum 5 concurrent polls)
-* Snapshot-based polling per cycle
-* Clean separation of readiness and health
-* Graceful shutdown using context cancellation
+* Clear separation of readiness vs health
+* Graceful shutdown via context cancellation
 
 ---
 
 ## Project Structure
 
 ```
-health-monitor/
+system-health-monitor/
 ├── go.mod
 ├── monitor/
 │   ├── main.go
 │   └── internal/
 │       ├── models.go      # Core data models
-│       ├── store.go       # Thread-safe service store
-│       ├── monitor.go     # Polling engine and worker pool
-│       └── handlers.go    # HTTP handlers
+│       ├── store.go       # Thread-safe in-memory store
+│       ├── monitor.go    # Polling scheduler + worker pool
+│       └── handlers.go   # HTTP handlers
 └── services/
     ├── svc1/
-    │   └── main.go        # Example healthy service
+    │   └── main.go        # Example mostly-healthy service
     └── svc2/
-        └── main.go        # Example degrading service
+        └── main.go        # Example error-prone service
 ```
 
 ---
@@ -54,52 +58,67 @@ Example payload:
 {
   "id": "svc1",
   "url": "http://localhost:9001",
+  "poll_interval_sec": 10,
   "attributes": {
-    "service": "user",
-    "env": "prod"
+    "env": "dev",
+    "team": "core"
   }
 }
 ```
 
-The monitor stores services in a thread-safe in-memory store. Attributes provided during registration are merged with attributes returned by the `/health` endpoint.
+### Registration Semantics
+
+* `id` and `url` are mandatory
+* `poll_interval_sec` is optional
+
+  * If omitted or zero, the global default interval is used
+* Attributes provided during registration are stored and later **merged** with attributes returned by `/health`
 
 ---
 
 ## Polling Model
 
-The monitor runs a continuous loop with a fixed polling interval (default: 10 seconds).
+The monitor runs a **self-timed scheduler loop** with a global pacing interval (default: 10 seconds).
 
-For each cycle:
+Each iteration performs the following steps:
 
-1. A snapshot of currently registered services is taken
-2. A per-cycle job queue is created
-3. A fixed worker pool (max 5 workers) consumes jobs
-4. Each service is polled exactly once in the cycle
-5. Metrics and health state are updated
+1. Take a snapshot of all registered services
+2. Select only those services whose **per-service polling interval has elapsed**
+3. Create a **per-cycle job queue** sized to the snapshot
+4. Start a bounded worker pool (max 5 workers)
+5. Poll each selected service **exactly once**
+6. Update metrics atomically in the store
 
-If a polling cycle takes longer than the configured interval, the next cycle starts immediately. There are no overlapping cycles and no persistent backlog.
+### Important Properties
+
+* **No overlapping cycles**
+* **No persistent queue**
+* If a cycle takes longer than the pacing interval, the next cycle starts immediately
+* Newly registered services are picked up automatically in the next cycle
+
+This avoids stale checks and unbounded backlog accumulation.
 
 ---
 
 ## Health and Readiness Semantics
 
-Readiness and health are treated as separate concepts:
+Readiness and health are treated as separate concerns.
 
 ### Readiness
 
-* `ready = true` if the service responds with HTTP 200
-* `ready = false` if the service is unreachable or returns a non-200 response
+* `ready = true` → HTTP 200 received from `/health`
+* `ready = false` → network error or non-200 response
 
-### Health
+### Health Classification
 
-| Condition                 | Health    |
-| ------------------------- | --------- |
-| Network failure / timeout | dead      |
-| HTTP non-200              | unhealthy |
-| 200 OK + high error rate  | degraded  |
-| 200 OK + low error rate   | healthy   |
+| Condition                       | Health      |
+| ------------------------------- | ----------- |
+| Request failure / timeout       | `dead`      |
+| HTTP non-200 response           | `unhealthy` |
+| 200 OK + error rate > threshold | `degraded`  |
+| 200 OK + error rate ≤ threshold | `healthy`   |
 
-This mirrors real-world systems such as Kubernetes readiness and liveness probes.
+This model mirrors real-world systems such as Kubernetes readiness and liveness probes.
 
 ---
 
@@ -109,31 +128,45 @@ This mirrors real-world systems such as Kubernetes readiness and liveness probes
 GET /metrics
 ```
 
-Returns JSON containing all registered services with:
+Returns JSON for **all registered services**, including:
 
-* readiness
+* readiness (`ready`)
 * health status
-* uptime
+* uptime (seconds)
 * request count
 * error count
 * error rate
-* dynamic attributes
-* last checked age
+* merged dynamic attributes
+* last checked age (seconds)
+
+This endpoint is read-only and never triggers polling.
+
+Sample GET /metrics response:
+![metrics_response](image.png)
 
 ---
 
 ## Example Services
 
-Two example services are included:
+Two example services are included to demonstrate behavior:
 
-* **svc1**: always healthy
-* **svc2**: periodically increases error count to demonstrate degradation
+### svc1
+
+* Mostly healthy
+* Low error rate
+* Poll interval: 10 seconds
+
+### svc2
+
+* Higher error rate
+* Frequently enters `degraded` state
+* Poll interval: 5 seconds
 
 Each service:
 
-* exposes `/health`
-* tracks its own metrics
-* registers itself with the monitor on startup
+* Exposes `/health`
+* Maintains its own counters
+* Registers itself with the monitor at startup
 
 ---
 
@@ -152,7 +185,7 @@ go run services/svc1/main.go
 go run services/svc2/main.go
 ```
 
-View metrics:
+View aggregated metrics:
 
 ```
 http://localhost:8080/metrics
@@ -162,12 +195,13 @@ http://localhost:8080/metrics
 
 ## Design Rationale
 
-* Per-cycle queues are used for coordination, not buffering
-* No persistent queue avoids stale health checks
-* Snapshot-based polling avoids race conditions with dynamic registration
-* Self-timed scheduling adapts naturally to load
+* **Snapshot-based polling** avoids races with dynamic registration
+* **Per-cycle queues** coordinate work without retaining stale jobs
+* **Bounded concurrency** prevents overload
+* **Self-timed scheduling** adapts naturally to slow or fast polling cycles
+* **Context cancellation** ensures clean shutdown of goroutines
 
-The design is intentionally simple but aligns with production monitoring principles used by systems like Prometheus.
+The architecture is intentionally minimal but reflects production monitoring patterns used by systems such as Prometheus and Kubernetes controllers.
 
 ---
 
@@ -175,13 +209,13 @@ The design is intentionally simple but aligns with production monitoring princip
 
 * Prometheus exporter
 * Persistent storage (SQLite / BoltDB)
-* Per-service polling intervals
 * gRPC health checks
-* Alerting and notification hooks
+* Alerting / notification hooks
+* Jittered scheduling to avoid thundering herds
 
 ---
 
 ## License
 
-This project is licensed under the MIT License.  
+This project is licensed under the MIT License.
 See the [LICENSE](LICENSE) file for details.

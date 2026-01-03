@@ -11,31 +11,50 @@ const (
 	Dead      HealthStatus = "dead"
 )
 
+// ServiceRegistration is the JSON posted to /register
 type ServiceRegistration struct {
-	ID         string            `json:"id"`
-	URL        string            `json:"url"`
-	Attributes map[string]string `json:"attributes"`
+	ID              string            `json:"id"`
+	URL             string            `json:"url"`
+	Attributes      map[string]string `json:"attributes,omitempty"`
+	PollIntervalSec int               `json:"poll_interval_sec,omitempty"` // optional per-service interval
 }
 
+// HealthResponse is expected from service /health
 type HealthResponse struct {
 	UptimeSec    int               `json:"uptime_sec"`
 	RequestCount int               `json:"request_count"`
 	ErrorCount   int               `json:"error_count"`
-	Attributes   map[string]string `json:"attributes"`
+	Attributes   map[string]string `json:"attributes,omitempty"`
 }
 
+// ServiceMetrics stored by monitor
 type ServiceMetrics struct {
-	Ready          bool              `json:"ready"`
-	Health         HealthStatus      `json:"health"`
-	UptimeSec      int               `json:"uptime_sec"`
-	RequestCount   int               `json:"request_count"`
-	ErrorCount     int               `json:"error_count"`
-	ErrorRate      float64           `json:"error_rate"`
-	LastCheckedAge int               `json:"last_checked_age_sec"`
-	Attributes     map[string]string `json:"attributes"`
-	LastCheckedAt  time.Time         `json:"-"`
+	Ready           bool              `json:"ready"`
+	Health          HealthStatus      `json:"health"`
+	UptimeSec       int               `json:"uptime_sec"`
+	RequestCount    int               `json:"request_count"`
+	ErrorCount      int               `json:"error_count"`
+	ErrorRate       float64           `json:"error_rate"`
+	LastCheckedAge  int               `json:"last_checked_age_sec"`
+	Attributes      map[string]string `json:"attributes,omitempty"`
+	LastCheckedAt   time.Time         `json:"-"`
+	LastPolledAt    time.Time         `json:"-"`
+	PollIntervalSec int               `json:"poll_interval_sec,omitempty"`
 }
 
+// ServiceMetrics responce exposed via metrics api
+type ServiceMetricsResponse struct {
+	Service     string            `json:"service"`
+	Status      string            `json:"status"`
+	Health      string            `json:"health"`
+	Ready       bool              `json:"ready"`
+	LastChecked string            `json:"last_checked"`
+	ErrorRate   float64           `json:"error_rate"`
+	UptimeSec   int               `json:"uptime_sec"`
+	Attributes  map[string]string `json:"attributes,omitempty"`
+}
+
+// Service represents a registered service
 type Service struct {
 	ID      string         `json:"id"`
 	URL     string         `json:"url"`
