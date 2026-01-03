@@ -142,7 +142,8 @@ Returns JSON for **all registered services**, including:
 This endpoint is read-only and never triggers polling.
 
 Sample GET /metrics response:
-![metrics_response](image.png)
+
+<img src="image.png" alt="Sample GET /metrics response" width="250"/>
 
 ---
 
